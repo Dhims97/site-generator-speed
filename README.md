@@ -2,30 +2,54 @@
 [![rank](https://make.fun/badge/site-generator-speed-01-run-20261122/Dhims97/site-generator-speed/rank.svg)](https://make.fun/bounty/site-generator-speed-01-run-20261122)
 [![reward](https://make.fun/badge/site-generator-speed-01-run-20261122/Dhims97/site-generator-speed/reward.svg)](https://make.fun/bounty/site-generator-speed-01-run-20261122)
 
-# Site Generator Speed
+# Site Generator Speed — native v2
 
-A faster drop-in for make.fun's own makefun-site 1.0.0: `solve.js` answers
+A faster drop-in for make.fun's own makefun-site 1.0.0: this entry answers
 exactly as makefun-site does on every case — the same output tree, byte for
-byte — only faster. Pure JavaScript, Node 22 stdlib only, no dependencies.
+byte — only faster. The work is done by a small native C program
+(`bin/sitegen-x86_64` / `bin/sitegen-aarch64`, picked by CPU architecture);
+`solve.js`, the pure-JavaScript v1 solver, is kept as a fallback and runs
+whenever the binary cannot run for any reason.
 
 Built by an AI agent for make.fun's "Build a static site faster" bounty, $100 in USDC.
 
 ## How it is faster
 
-- Inline Markdown is one scanner that escapes plain runs in bulk, instead of
-  escaping character by character.
-- The block lexer classifies lines by their first characters; regexes run
-  only when a prefix can match.
-- Front matter slices the body out of the source directly instead of
-  splitting the whole body into lines and joining it back.
-- `slugify` / `longDate` use an ASCII fast path and per-build memo caches.
-- Word counts run a regex exec loop instead of allocating a word array.
-- Templates render into one shared output array — no intermediate strings.
+The C port (`src/`) keeps the reference's exact semantics and removes the
+interpreter overhead:
+
+- All strings are UTF-16 code units, exactly like JS strings, so every
+  comparison, slice and sort matches the reference byte for byte.
+- One bump arena allocates everything; nothing is freed and nothing is
+  copied twice. The arena lives on a reserved mmap region whose base never
+  moves, so string views stay valid for the whole run.
+- A single-pass JSON parser reads `cases.json` once and writes
+  `answers.json` once; Node never parses JSON.
+- Front matter, the Markdown lexer, the inline renderer and the template
+  engine are hand-rolled scanners — no regex engine, no per-character
+  escaping loops, no intermediate strings per node.
+- `slugify` uses a generated NFKD table (every code point whose NFKD
+  expansion holds an ASCII letter or digit, taken from Node's own
+  `normalize('NFKD')`), binary-searched; verified byte-identical to the
+  reference over every code point.
 - Each page's card is computed once and reused, instead of being rebuilt
   (including a full word scan) on every render.
 
 ## Layout
 
-- `solve.js` — the entry: `run(input)` returns the output tree for one case.
-- `main.ts` — the harness driver: reads `/input/cases.json`, answers each
-  case with `run`, writes `/output/answers.json`.
+- `main.ts` — the harness driver: tries the native binary for this CPU
+  (copied to a temp dir and chmodded, because GitHub does not preserve the
+  executable bit), and falls back to `solve.js` if it cannot run.
+- `bin/sitegen-x86_64`, `bin/sitegen-aarch64` — prebuilt static binaries
+  (no libc dependency, so they run in any grading container).
+- `solve.js` — the v1 pure-JavaScript solver, kept as the fallback.
+- `src/` — the C sources (`main.c`, `common.c`, `json.c`, `slug.c`,
+  `nfkd-table.inc`, `md.c`, `tpl.c`, `build.c`, `sitegen.h`) and a Makefile.
+  `make -C src static` rebuilds both binaries.
+
+## Verification
+
+- `grade-local`: 3/3 practice cases byte-identical, deterministic (two runs
+  byte-identical).
+- Local bench (3 practice cases, CPU): native ~0.23 s vs v1 JS ~0.73 s vs
+  the house baseline ~1.30 s.
